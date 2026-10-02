@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DESK // cDa</title>
+<meta name="robots" content="noindex,nofollow,noarchive">
+<meta name="referrer" content="no-referrer">
+<link rel="stylesheet" href="cda.css">
+<style>
+  .gate { max-width: 420px; margin: 48px auto; border: 1px solid #3f3; padding: 18px; background: #071107; }
+  .gate input {
+    width: 100%; box-sizing: border-box; background: #000; color: #9f6;
+    border: 1px solid #3f3; font-family: inherit; font-size: 14px; padding: 8px;
+  }
+  .gate button {
+    margin-top: 10px; background: #9f6; color: #050805; border: 0;
+    font-family: inherit; padding: 8px 12px; cursor: pointer; letter-spacing: 1px;
+  }
+  .meta { font-size: 12px; color: #6a6; margin: 8px 0 14px; }
+  .err { color: #f66; }
+</style>
+</head>
+<body>
+<div class="scan"></div>
+<div class="wrap">
+  <div class="topbar">
+    <span>cDa DESK</span>
+    <span>CLEARANCE: HANDLER</span>
+    <span class="blink">RESTRICTED</span>
+  </div>
+  <nav class="menu">
+    <a href="index.html">GOSPEL</a>
+    <a href="operations.html">OPERATIONS</a>
+    <a href="admin.html" class="on">DESK</a>
+  </nav>
+
+  <div id="gate" class="gate">
+    <h1>DESK</h1>
+    <p class="dim">handler authentication. visits are IP + time. nothing else.</p>
+    <input id="pw" type="password" autocomplete="current-password" placeholder="passphrase">
+    <button type="button" id="go">OPEN</button>
+    <p id="err" class="err"></p>
+  </div>
+
+  <div id="desk" hidden>
+    <div class="head">
+      <h1>VISITOR LOG</h1>
+      <p class="meta">ip is the public address of the request. time is UTC.</p>
+      <p class="meta" id="count"></p>
+    </div>
+    <table class="board">
+      <thead>
+        <tr><th>TIME (UTC)</th><th>IP</th><th>PATH</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</div>
+<script src="cda-log.js"></script>
+<script>
+(function () {
+  var base = window.CDA_LOG_URL;
+  var gate = document.getElementById("gate");
+  var desk = document.getElementById("desk");
+  var err = document.getElementById("err");
+  var rows = document.getElementById("rows");
+  var count = document.getElementById("count");
+
+  function show(list) {
+    rows.innerHTML = "";
+    count.textContent = (list.length || 0) + " records. newest first.";
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i];
+      var tr = document.createElement("tr");
+      var t = (r.t || "").replace("T", " ").replace("Z", "Z");
+      tr.innerHTML = "<td>" + t + "</td><td>" + (r.ip || "") + "</td><td>" + (r.path || "/") + "</td>";
+      rows.appendChild(tr);
+    }
+    gate.hidden = true;
+    desk.hidden = false;
+  }
+
+  document.getElementById("go").onclick = function () {
+    err.textContent = "";
+    if (!base) {
+      err.textContent = "log endpoint not configured.";
+      return;
+    }
+    var token = document.getElementById("pw").value;
+    fetch(String(base).replace(/\/$/, "") + "/v", {
+      headers: { Authorization: "Bearer " + token }
+    }).then(function (res) {
+      if (!res.ok) throw new Error("denied");
+      return res.json();
+    }).then(show).catch(function () {
+      err.textContent = "denied.";
+    });
+  };
+
+  document.getElementById("pw").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") document.getElementById("go").click();
+  });
+})();
+</script>
+</body>
+</html>
