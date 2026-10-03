@@ -18,6 +18,8 @@
   }
   .meta { font-size: 12px; color: #6a6; margin: 8px 0 14px; }
   .err { color: #f66; }
+  .geo { font-size: 12px; }
+  .geo a { color: #ff0; }
 </style>
 </head>
 <body>
@@ -36,7 +38,7 @@
 
   <div id="gate" class="gate">
     <h1>DESK</h1>
-    <p class="dim">handler authentication. visits are IP + time. nothing else.</p>
+    <p class="dim">handler authentication. visits are IP + time + geo.</p>
     <input id="pw" type="password" autocomplete="current-password" placeholder="passphrase">
     <button type="button" id="go">OPEN</button>
     <p id="err" class="err"></p>
@@ -45,12 +47,12 @@
   <div id="desk" hidden>
     <div class="head">
       <h1>VISITOR LOG</h1>
-      <p class="meta">ip is the public address of the request. time is UTC.</p>
+      <p class="meta">ip is the public address of the request. time is UTC. geo is IP-lookup, not GPS — multi-source (ipwho / geojs / ipapi), same family as geolocator_ultimate. records are never deleted.</p>
       <p class="meta" id="count"></p>
     </div>
     <table class="board">
       <thead>
-        <tr><th>TIME (UTC)</th><th>IP</th><th>PATH</th></tr>
+        <tr><th>TIME (UTC)</th><th>IP</th><th>PATH</th><th>GEO</th></tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>
@@ -65,19 +67,144 @@
   var err = document.getElementById("err");
   var rows = document.getElementById("rows");
   var count = document.getElementById("count");
+  var geoCache = {};
+
+  function esc(s) {
+    return String(s || "").replace(/[&<>"']/g, function (c) {
+      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+    });
+  }
+
+  function isPublicIp(ip) {
+    if (!ip || ip === "unknown") return false;
+    if (ip.indexOf(":") >= 0) return true;
+    var p = ip.split(".").map(Number);
+    if (p.length !== 4 || p.some(isNaN)) return false;
+    if (p[0] === 10 || p[0] === 127) return false;
+    if (p[0] === 192 && p[1] === 168) return false;
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return false;
+    return true;
+  }
+
+  function pickNum(v) {
+    var n = Number(v);
+    return isFinite(n) ? n : null;
+  }
+
+  function consensus(ip, blobs) {
+    var cities = [];
+    var regions = [];
+    var countries = [];
+    var isps = [];
+    var lats = [];
+    var lons = [];
+    blobs.forEach(function (b) {
+      if (!b || typeof b !== "object") return;
+      if (b.success === false || b.error) return;
+      var city = b.city || b.regionName;
+      var region = b.region || b.region_name || b.regionName;
+      var country = b.country || b.country_name || b.country_code;
+      var isp = b.isp || b.org || b.organization || b.asn_org;
+      var lat = pickNum(b.latitude != null ? b.latitude : b.lat);
+      var lon = pickNum(b.longitude != null ? b.longitude : b.lon);
+      if (city) cities.push(String(city));
+      if (region) regions.push(String(region));
+      if (country) countries.push(String(country));
+      if (isp) isps.push(String(isp));
+      if (lat != null && lon != null) { lats.push(lat); lons.push(lon); }
+    });
+    function mode(arr) {
+      var c = {};
+      var best = "";
+      var n = 0;
+      arr.forEach(function (x) {
+        var k = x.toLowerCase();
+        c[k] = (c[k] || 0) + 1;
+        if (c[k] > n) { n = c[k]; best = x; }
+      });
+      return best;
+    }
+    var lat = lats.length ? lats.reduce(function (a, b) { return a + b; }, 0) / lats.length : null;
+    var lon = lons.length ? lons.reduce(function (a, b) { return a + b; }, 0) / lons.length : null;
+    return {
+      ip: ip,
+      city: mode(cities),
+      region: mode(regions),
+      country: mode(countries),
+      isp: mode(isps),
+      lat: lat,
+      lon: lon,
+      sources: blobs.length
+    };
+  }
+
+  function lookup(ip) {
+    if (geoCache[ip]) return Promise.resolve(geoCache[ip]);
+    if (!isPublicIp(ip)) {
+      geoCache[ip] = { ip: ip, skip: true };
+      return Promise.resolve(geoCache[ip]);
+    }
+    var urls = [
+      "https://ipwho.is/" + encodeURIComponent(ip),
+      "https://get.geojs.io/v1/ip/geo/" + encodeURIComponent(ip) + ".json",
+      "https://ipapi.co/" + encodeURIComponent(ip) + "/json/"
+    ];
+    return Promise.all(urls.map(function (u) {
+      return fetch(u, { cache: "no-store" }).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+    })).then(function (blobs) {
+      var g = consensus(ip, blobs.filter(Boolean));
+      geoCache[ip] = g;
+      return g;
+    });
+  }
+
+  function renderGeo(el, g) {
+    if (!g || g.skip) {
+      el.textContent = "—";
+      return;
+    }
+    var line = [g.city, g.region, g.country].filter(Boolean).join(", ");
+    if (g.isp) line += (line ? " · " : "") + g.isp;
+    if (!line) line = "no fix";
+    var html = esc(line);
+    if (g.lat != null && g.lon != null) {
+      var q = g.lat.toFixed(5) + "," + g.lon.toFixed(5);
+      html += "<br><a href=\"https://maps.google.com/?q=" + q + "\" target=\"_blank\" rel=\"noopener\">" + q + "</a>";
+    }
+    el.innerHTML = html;
+  }
 
   function show(list) {
     rows.innerHTML = "";
-    count.textContent = (list.length || 0) + " records. newest first.";
+    count.textContent = (list.length || 0) + " records. newest first. geo fills in without touching the log.";
+    var cells = [];
     for (var i = 0; i < list.length; i++) {
       var r = list[i];
       var tr = document.createElement("tr");
-      var t = (r.t || "").replace("T", " ").replace("Z", "Z");
-      tr.innerHTML = "<td>" + t + "</td><td>" + (r.ip || "") + "</td><td>" + (r.path || "/") + "</td>";
+      var t = (r.t || "").replace("T", " ");
+      tr.innerHTML = "<td>" + esc(t) + "</td><td>" + esc(r.ip) + "</td><td>" + esc(r.path || "/") + "</td><td class=\"geo\">…</td>";
       rows.appendChild(tr);
+      cells.push({ ip: r.ip || "", el: tr.lastChild });
     }
     gate.hidden = true;
     desk.hidden = false;
+
+    var uniq = [];
+    var seen = {};
+    cells.forEach(function (c) {
+      if (!seen[c.ip]) { seen[c.ip] = 1; uniq.push(c.ip); }
+    });
+    var chain = Promise.resolve();
+    uniq.forEach(function (ip, idx) {
+      chain = chain.then(function () {
+        return lookup(ip).then(function (g) {
+          cells.forEach(function (c) {
+            if (c.ip === ip) renderGeo(c.el, g);
+          });
+          return new Promise(function (res) { setTimeout(res, idx === uniq.length - 1 ? 0 : 250); });
+        });
+      });
+    });
   }
 
   document.getElementById("go").onclick = function () {
